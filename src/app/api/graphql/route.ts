@@ -25,6 +25,12 @@ const typeDefs = gql`
   }
 `;
 
+// ✅ Define the resolver argument types
+interface VideoArgs {
+  title: string;
+  filePath: string;
+}
+
 const resolvers = {
   Query: {
     videos: async () => {
@@ -33,7 +39,7 @@ const resolvers = {
     },
   },
   Mutation: {
-    addVideo: async (_, { title, filePath }) => {
+    addVideo: async (_: unknown, { title, filePath }: VideoArgs) => {
       await connectDB();
       const video = new Video({ title, filePath });
       await video.save();

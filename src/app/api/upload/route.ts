@@ -3,9 +3,9 @@ import fs from "fs";
 import path from "path";
 import { connectDB } from "../../../lib/mongodb";
 import { Video } from "../../../models/Video";
-import multer from "multer";
+// import multer from "multer";
 
-const upload = multer({ dest: "public/uploads/" });
+// const upload = multer({ dest: "public/uploads/" });
 
 export async function POST(req: Request) {
   try {
@@ -30,7 +30,7 @@ export async function POST(req: Request) {
     await newVideo.save();
 
     return NextResponse.json({ message: "Video uploaded successfully", filePath });
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error : unknown) {
+    return NextResponse.json({ error: error }, { status: 500 });
   }
 }

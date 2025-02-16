@@ -6,7 +6,6 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { connectDB } from "../../../lib/mongodb";
 import { Video } from "../../../models/Video";
 import { AssemblyAI } from "assemblyai";
-import { type PutBlobResult } from '@vercel/blob';
 import { upload } from '@vercel/blob/client';
 
 const gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
@@ -32,17 +31,18 @@ export async function POST(req: Request) {
     const audioPath = await extractAudio(absoluteVideoPath);
 
     // 2️⃣ Transcribe Audio to Text using Gemini AI
-    const { text: transcriptText, transcriptPath } = await transcribeAudio(
+    const { text: transcriptText , transcriptPath } = await transcribeAudio(
       audioPath
     );
 
     await new Promise((resolve) => setTimeout(resolve, 1000)); // Small delay
 
     console.log("Transcript:", transcriptText);
+    console.log("Transcript Path:", transcriptPath);
 
     // 3️⃣ Extract Key Moments & Captions from the Transcript
     const { keyMoments, captions } = await extractKeyMomentsFromTranscript(
-      transcriptText
+      transcriptText || ""
     );
 
     console.log("Key Moments:", keyMoments);
@@ -65,9 +65,9 @@ export async function POST(req: Request) {
       message: "Short videos created with captions",
       shortVideos,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error(error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: error }, { status: 500 });
   }
 }
 
@@ -103,7 +103,7 @@ async function transcribeAudio(audioPath: string) {
     fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
   }
 
-  fs.writeFileSync(transcriptPath, transcript.text, "utf-8");
+  fs.writeFileSync(transcriptPath, transcript.text || "", "utf-8");
 
   // upload to vercel
   const { url } = await upload(path.basename(audioPath, ".mp3") + ".txt", transcriptPath, {

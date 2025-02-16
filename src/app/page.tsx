@@ -1,8 +1,15 @@
 "use client";
 import { useState, useEffect } from "react";
 
+interface Video {
+  id: string;
+  title: string;
+  filePath: string;
+  shorts?: string[];
+}
+
 export default function Home() {
-  const [videos, setVideos] = useState<any[]>([]);
+  const [videos, setVideos] = useState<Video[]>([]);
   const [video, setVideo] = useState<File | null>(null);
   const [error, setError] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -34,8 +41,12 @@ export default function Home() {
         }
 
         setVideos(data.data?.videos || []);
-      } catch (err: any) {
-        setError(err.message);
+      } catch (err) {
+        if (err instanceof Error) {
+          setError(err.message);
+        } else {
+          setError("An unknown error occurred");
+        }
       }
     }
 
@@ -104,8 +115,12 @@ export default function Home() {
       alert("Video uploaded, added to DB, and processed successfully!");
       setVideos([...videos, { ...graphQLData.data.addVideo, shorts: processData.shortVideos }]); // Update UI
       setVideo(null); // Reset file input
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError("An unknown error occurred");
+      }
     } finally {
       setUploading(false);
     }
