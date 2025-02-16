@@ -6,12 +6,12 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { connectDB } from "../../../lib/mongodb";
 import { Video } from "../../../models/Video";
 import { AssemblyAI } from "assemblyai";
-import { put } from '@vercel/blob';
+import { put } from "@vercel/blob";
 
 const gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
 const client = new AssemblyAI({
-  apiKey: "a6921ce191fe40039549725e5da80e34",
+  apiKey: process.env.ASSEMBLYAI_API_KEY!,
 });
 
 export async function POST(req: Request) {
@@ -27,7 +27,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // 1️⃣ Extract Audio from Video
     const audioPath = await extractAudio(absoluteVideoPath);
 
     const fileName = path.basename(audioPath, ".mp3") + ".txt";
@@ -37,33 +36,20 @@ export async function POST(req: Request) {
       access: "public",
     });
 
+    const { text: transcriptText } = await transcribeAudio(url);
 
-    // 2️⃣ Transcribe Audio to Text using Gemini AI
-    const { text: transcriptText , transcriptPath } = await transcribeAudio(
-      url
-    );
+    await new Promise((resolve) => setTimeout(resolve, 1000));
 
-    await new Promise((resolve) => setTimeout(resolve, 1000)); // Small delay
-
-    console.log("Transcript:", transcriptText);
-    console.log("Transcript Path:", transcriptPath);
-
-    // 3️⃣ Extract Key Moments & Captions from the Transcript
     const { keyMoments, captions } = await extractKeyMomentsFromTranscript(
       transcriptText || ""
     );
 
-    console.log("Key Moments:", keyMoments);
-    console.log("Captions:", captions);
-
-    // 4️⃣ Generate Short Clips with Captions Overlay
     const shortVideos = await generateShortClipsWithCaptions(
       absoluteVideoPath,
       keyMoments,
       captions
     );
 
-    // 5️⃣ Update MongoDB with Generated Shorts
     await Video.findOneAndUpdate(
       { filePath: videoPath },
       { shorts: shortVideos }
@@ -79,7 +65,6 @@ export async function POST(req: Request) {
   }
 }
 
-// ✅ **Extract Audio from Video**
 async function extractAudio(videoPath: string) {
   const audioPath = videoPath.replace(".mp4", ".mp3");
 
@@ -93,14 +78,12 @@ async function extractAudio(videoPath: string) {
   });
 }
 
-// ✅ **Transcribe Audio using Gemini AI**
 async function transcribeAudio(audioPath: string) {
   const config = {
     audio_url: audioPath,
   };
   const transcript = await client.transcripts.transcribe(config);
 
-  // Save transcript to a file
   const transcriptPath = path.join(
     process.cwd(),
     "public",
@@ -113,10 +96,9 @@ async function transcribeAudio(audioPath: string) {
 
   fs.writeFileSync(transcriptPath, transcript.text || "", "utf-8");
 
-  return { text: transcript.text, transcriptPath };
+  return { text: transcript.text };
 }
 
-// ✅ **Extract Key Moments & Captions from Transcript**
 async function extractKeyMomentsFromTranscript(transcript: string) {
   const prompt = `Identify key sentences and their timestamps from this transcript.
   Return output in the format:  
@@ -144,20 +126,8 @@ async function extractKeyMomentsFromTranscript(transcript: string) {
       captions.push(match[3]);
     }
   });
-  return {
-    keyMoments:
-      keyMoments.length > 0 ? keyMoments : ["0-30", "40-70", "90-120"],
-    captions:
-      captions.length > 0
-        ? captions
-        : [
-            "Runner's knee is a condition characterized by pain behind or around the kneecap",
-            "Symptoms include pain under or around the kneecap, pain when walking",
-            "The ligaments of the ankle holds the ankle bones and joint in position.",
-          ],
-  };
+  return { keyMoments, captions };
 }
-
 
 async function generateSrtSubtitles(
   timestamps: string[],
@@ -170,13 +140,12 @@ async function generateSrtSubtitles(
   for (let i = 0; i < timestamps.length; i++) {
     const [start, end] = timestamps[i].split("-").map(Number);
     const duration = end - start;
-    const numCaptions = Math.min(captions.length, Math.floor(duration / 4)); // Adjust frequency
+    const numCaptions = Math.min(captions.length, Math.floor(duration / 4));
 
     for (let j = 0; j < numCaptions; j++) {
-      const segmentStart = start + j * 4; // Every 4 seconds
+      const segmentStart = start + j * 4;
       const segmentEnd = Math.min(segmentStart + 4, end);
 
-      // Convert to SRT time format
       const startFormatted = new Date(segmentStart * 1000)
         .toISOString()
         .substr(11, 12)
@@ -193,9 +162,7 @@ async function generateSrtSubtitles(
   }
 
   fs.writeFileSync(outputFile, srtContent, "utf-8");
-  console.log(`✅ SRT subtitles created: ${outputFile}`);
 }
-
 
 async function generateShortClipsWithCaptions(
   videoPath: string,
@@ -206,7 +173,8 @@ async function generateShortClipsWithCaptions(
   const subtitlesDir = path.join(process.cwd(), "public", "subtitles");
 
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-  if (!fs.existsSync(subtitlesDir)) fs.mkdirSync(subtitlesDir, { recursive: true });
+  if (!fs.existsSync(subtitlesDir))
+    fs.mkdirSync(subtitlesDir, { recursive: true });
 
   const shortVideos: string[] = [];
 
@@ -218,10 +186,8 @@ async function generateShortClipsWithCaptions(
 
     console.log(`srtFile`, srtFile);
 
-    // ✅ Generate SRT Subtitle
     await generateSrtSubtitles([timestamps[i]], [captions[i]], srtFile);
 
-    // ✅ Generate Short Clip with Subtitles
     await new Promise<void>((resolve, reject) => {
       ffmpeg(videoPath)
         .setStartTime(start)
@@ -229,7 +195,7 @@ async function generateShortClipsWithCaptions(
         .outputOptions(
           "-vf",
           `subtitles=${srtFile}:force_style='Fontsize=50,PrimaryColour=&HFFFFFF,Alignment=5,MarginV=50'`
-        ) // Ensures text is centered
+        )
         .output(outputClip)
         .on("end", () => {
           console.log(`✅ Short video created: ${outputClip}`);

@@ -5,7 +5,6 @@ import { connectDB } from "../../../lib/mongodb";
 import { Video } from "../../../models/Video";
 import { gql } from "graphql-tag";
 
-// ✅ Ensure the database is connected
 await connectDB();
 
 const typeDefs = gql`
@@ -25,7 +24,6 @@ const typeDefs = gql`
   }
 `;
 
-// ✅ Define the resolver argument types
 interface VideoArgs {
   title: string;
   filePath: string;
