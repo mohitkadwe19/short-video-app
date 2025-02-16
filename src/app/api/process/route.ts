@@ -29,10 +29,12 @@ export async function POST(req: Request) {
 
     const audioPath = await extractAudio(absoluteVideoPath);
 
-    const fileName = path.basename(audioPath, ".mp3") + ".txt";
-    const fileBuffer = fs.readFileSync(audioPath);
+    const folderRelative = path.dirname(videoPath);
 
-    const { url } = await put(`upload/${fileName}`, fileBuffer, {
+    const audioFileName = path.basename(audioPath);
+    const putPath = `${folderRelative}/${audioFileName}`;
+    const fileBuffer = fs.readFileSync(audioPath);
+    const { url } = await put(putPath, fileBuffer, {
       access: "public",
     });
 
@@ -45,7 +47,7 @@ export async function POST(req: Request) {
     );
 
     const shortVideos = await generateShortClipsWithCaptions(
-      absoluteVideoPath,
+      videoPath,
       keyMoments,
       captions
     );
@@ -65,52 +67,40 @@ export async function POST(req: Request) {
   }
 }
 
-async function extractAudio(videoPath: string) {
-  const audioPath = videoPath.replace(".mp4", ".mp3");
+async function extractAudio(videoPath: string): Promise<string> {
+  const folder = path.dirname(videoPath);
+  const audioPath = path.join(folder, "audio.mp3");
 
   return new Promise<string>((resolve, reject) => {
     ffmpeg(videoPath)
       .output(audioPath)
       .audioCodec("libmp3lame")
       .on("end", () => resolve(audioPath))
-      .on("error", reject)
+      .on("error", (err) => reject(err))
       .run();
   });
 }
 
-async function transcribeAudio(audioPath: string) {
-  const config = {
-    audio_url: audioPath,
-  };
+async function transcribeAudio(audioUrl: string) {
+  const config = { audio: audioUrl };
   const transcript = await client.transcripts.transcribe(config);
 
-  const transcriptPath = path.join(
-    process.cwd(),
-    "public",
-    "transcripts",
-    path.basename(audioPath, ".mp3")
-  );
-  if (!fs.existsSync(path.dirname(transcriptPath))) {
-    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
-  }
-
-  fs.writeFileSync(transcriptPath, transcript.text || "", "utf-8");
-
+  path.dirname(audioUrl);
   return { text: transcript.text };
 }
 
 async function extractKeyMomentsFromTranscript(transcript: string) {
-  const prompt = `Identify key sentences and their timestamps from this transcript.
-  Return output in the format:  
-  start-end: caption text
-  
-  Example output:
-  10-30: "Success is about discipline."
-  40-70: "Hard work beats talent when talent is lazy."
-  100-130: "Dream big, start small."
+  const prompt = `Identify 3 key sentences and their timestamps from this transcript.
+Return output in the format:  
+start-end: caption text
 
-  Transcript:
-  ${transcript}`;
+Example output:
+10-30: "Success is about discipline."
+40-70: "Hard work beats talent when talent is lazy."
+100-130: "Dream big, start small."
+
+Transcript:
+${transcript}`;
 
   const model = gemini.getGenerativeModel({ model: "gemini-1.5-flash" });
   const response = await model.generateContent(prompt);
@@ -129,38 +119,46 @@ async function extractKeyMomentsFromTranscript(transcript: string) {
   return { keyMoments, captions };
 }
 
+async function getVideoDimensions(videoPath: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(videoPath, (err, metadata) => {
+      if (err) return reject(err);
+      const videoStream = metadata.streams.find((s) => s.codec_type === "video");
+      if (!videoStream) return reject("No video stream found");
+      resolve({ width: videoStream.width || 0, height: videoStream.height || 0 });
+    });
+  });
+}
+
 async function generateSrtSubtitles(
-  timestamps: string[],
-  captions: string[],
+  timestamp: string,
+  caption: string,
   outputFile: string
 ) {
+  const [start, end] = timestamp.split("-").map(Number);
+  const duration = end - start;
+  const segmentLength = 4;
+  const numSegments = Math.ceil(duration / segmentLength);
+
+  const sentences = caption.split(/(?<=[.?!])\s+/).filter((s) => s.trim().length > 0);
+
   let srtContent = "";
   let counter = 1;
-
-  for (let i = 0; i < timestamps.length; i++) {
-    const [start, end] = timestamps[i].split("-").map(Number);
-    const duration = end - start;
-    const numCaptions = Math.min(captions.length, Math.floor(duration / 4));
-
-    for (let j = 0; j < numCaptions; j++) {
-      const segmentStart = start + j * 4;
-      const segmentEnd = Math.min(segmentStart + 4, end);
-
-      const startFormatted = new Date(segmentStart * 1000)
-        .toISOString()
-        .substr(11, 12)
-        .replace(".", ",");
-
-      const endFormatted = new Date(segmentEnd * 1000)
-        .toISOString()
-        .substr(11, 12)
-        .replace(".", ",");
-
-      srtContent += `${counter}\n${startFormatted} --> ${endFormatted}\n${captions[j]}\n\n`;
-      counter++;
-    }
+  for (let i = 0; i < numSegments; i++) {
+    const segStart = i * segmentLength;
+    const segEnd = Math.min((i + 1) * segmentLength, duration);
+    const sentence = i < sentences.length ? sentences[i] : sentences[sentences.length - 1];
+    const startFormatted = new Date(segStart * 1000)
+      .toISOString()
+      .substr(11, 12)
+      .replace(".", ",");
+    const endFormatted = new Date(segEnd * 1000)
+      .toISOString()
+      .substr(11, 12)
+      .replace(".", ",");
+    srtContent += `${counter}\n${startFormatted} --> ${endFormatted}\n${sentence}\n\n`;
+    counter++;
   }
-
   fs.writeFileSync(outputFile, srtContent, "utf-8");
 }
 
@@ -169,37 +167,38 @@ async function generateShortClipsWithCaptions(
   timestamps: string[],
   captions: string[]
 ) {
-  const outputDir = path.join(process.cwd(), "public", "short_videos");
-  const subtitlesDir = path.join(process.cwd(), "public", "subtitles");
+  const baseFolder = path.dirname(videoPath);
+  const shortVideosDir = path.join(process.cwd(), "public", baseFolder, "short_videos");
+  const captionsDir = path.join(process.cwd(), "public", baseFolder, "captions");
 
-  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-  if (!fs.existsSync(subtitlesDir))
-    fs.mkdirSync(subtitlesDir, { recursive: true });
+  if (!fs.existsSync(shortVideosDir)) fs.mkdirSync(shortVideosDir, { recursive: true });
+  if (!fs.existsSync(captionsDir)) fs.mkdirSync(captionsDir, { recursive: true });
+
+  const { height } = await getVideoDimensions(path.join(process.cwd(), "public", videoPath));
+  const fontSize = Math.round(height / 20);
+  const captionColor = "&H00FF00";
 
   const shortVideos: string[] = [];
 
   for (let i = 0; i < timestamps.length; i++) {
     const [start, end] = timestamps[i].split("-").map(Number);
     const duration = end - start;
-    const outputClip = path.join(outputDir, `clip_${i}.mp4`);
-    const srtFile = path.join(subtitlesDir, `subtitle_${i}.srt`);
+    const outputClip = path.join(shortVideosDir, `clip_${i}.mp4`);
+    const srtFile = path.join(captionsDir, `subtitle_${i}.srt`);
 
-    console.log(`srtFile`, srtFile);
-
-    await generateSrtSubtitles([timestamps[i]], [captions[i]], srtFile);
+    await generateSrtSubtitles(timestamps[i], captions[i], srtFile);
 
     await new Promise<void>((resolve, reject) => {
-      ffmpeg(videoPath)
+      ffmpeg(path.join(process.cwd(), "public", videoPath))
         .setStartTime(start)
         .setDuration(duration)
         .outputOptions(
           "-vf",
-          `subtitles=${srtFile}:force_style='Fontsize=50,PrimaryColour=&HFFFFFF,Alignment=5,MarginV=50'`
+          `subtitles=${srtFile}:force_style='Fontsize=${fontSize},PrimaryColour=${captionColor},Alignment=5,MarginV=50'`
         )
         .output(outputClip)
         .on("end", () => {
-          console.log(`✅ Short video created: ${outputClip}`);
-          shortVideos.push(`/short_videos/clip_${i}.mp4`);
+          shortVideos.push(path.join(baseFolder, "short_videos", `clip_${i}.mp4`));
           resolve();
         })
         .on("error", (err) => {
@@ -209,6 +208,5 @@ async function generateShortClipsWithCaptions(
         .run();
     });
   }
-
   return shortVideos;
 }

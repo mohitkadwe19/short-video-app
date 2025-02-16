@@ -154,22 +154,29 @@ export default function Home() {
       {error && <p className="text-red-500 mt-4">{error}</p>}
 
       {/* Video List */}
-      <h2 className="text-xl font-semibold mt-6">Uploaded Videos</h2>
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mt-4">
-        {videos.map((video) => (
-          <div
-            key={video.id}
-            className="relative cursor-pointer border rounded-lg overflow-hidden shadow-md hover:shadow-lg transition-all"
-            onClick={() => {
-              setSelectedVideo(video);
-              setPlayingVideo(video.filePath);
-            }}
-          >
-            <video src={video.filePath} className="w-full h-40 object-cover"></video>
-            <p className="text-center p-2 font-semibold">{video.title}</p>
+      {videos.length > 0 && (
+        <>
+          <h2 className="text-xl font-semibold mt-6">Uploaded Videos</h2>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mt-4">
+            {videos.map((video, index) => (
+              <div
+                key={index}
+                className="relative cursor-pointer border rounded-lg overflow-hidden shadow-md hover:shadow-lg transition-all"
+                onClick={() => {
+                  setSelectedVideo(video);
+                  setPlayingVideo(video.filePath);
+                }}
+              >
+                <video
+                  src={video.filePath}
+                  className="w-full h-40 object-cover"
+                ></video>
+                <p className="text-center p-2 font-semibold">{video.title}</p>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </>
+      )}
 
       {/* Video Player Modal */}
       <Dialog open={!!selectedVideo} onClose={() => setSelectedVideo(null)} className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-75">
