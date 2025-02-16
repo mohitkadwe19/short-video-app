@@ -6,12 +6,12 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { connectDB } from "../../../lib/mongodb";
 import { Video } from "../../../models/Video";
 import { AssemblyAI } from "assemblyai";
-import { upload } from '@vercel/blob/client';
+import { put } from "@vercel/blob";
 
 const gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
 const client = new AssemblyAI({
-  apiKey: "a6921ce191fe40039549725e5da80e34",
+  apiKey: process.env.ASSEMBLYAI_API_KEY!,
 });
 
 export async function POST(req: Request) {
@@ -27,35 +27,31 @@ export async function POST(req: Request) {
       );
     }
 
-    // 1️⃣ Extract Audio from Video
     const audioPath = await extractAudio(absoluteVideoPath);
 
-    // 2️⃣ Transcribe Audio to Text using Gemini AI
-    const { text: transcriptText , transcriptPath } = await transcribeAudio(
-      audioPath
-    );
+    const folderRelative = path.dirname(videoPath);
 
-    await new Promise((resolve) => setTimeout(resolve, 1000)); // Small delay
+    const audioFileName = path.basename(audioPath);
+    const putPath = `${folderRelative}/${audioFileName}`;
+    const fileBuffer = fs.readFileSync(audioPath);
+    const { url } = await put(putPath, fileBuffer, {
+      access: "public",
+    });
 
-    console.log("Transcript:", transcriptText);
-    console.log("Transcript Path:", transcriptPath);
+    const { text: transcriptText } = await transcribeAudio(url);
 
-    // 3️⃣ Extract Key Moments & Captions from the Transcript
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
     const { keyMoments, captions } = await extractKeyMomentsFromTranscript(
       transcriptText || ""
     );
 
-    console.log("Key Moments:", keyMoments);
-    console.log("Captions:", captions);
-
-    // 4️⃣ Generate Short Clips with Captions Overlay
     const shortVideos = await generateShortClipsWithCaptions(
-      absoluteVideoPath,
+      videoPath,
       keyMoments,
       captions
     );
 
-    // 5️⃣ Update MongoDB with Generated Shorts
     await Video.findOneAndUpdate(
       { filePath: videoPath },
       { shorts: shortVideos }
@@ -71,63 +67,40 @@ export async function POST(req: Request) {
   }
 }
 
-// ✅ **Extract Audio from Video**
-async function extractAudio(videoPath: string) {
-  const audioPath = videoPath.replace(".mp4", ".mp3");
+async function extractAudio(videoPath: string): Promise<string> {
+  const folder = path.dirname(videoPath);
+  const audioPath = path.join(folder, "audio.mp3");
 
   return new Promise<string>((resolve, reject) => {
     ffmpeg(videoPath)
       .output(audioPath)
       .audioCodec("libmp3lame")
       .on("end", () => resolve(audioPath))
-      .on("error", reject)
+      .on("error", (err) => reject(err))
       .run();
   });
 }
 
-// ✅ **Transcribe Audio using Gemini AI**
-async function transcribeAudio(audioPath: string) {
-  const config = {
-    audio_url: "https://assembly.ai/sports_injuries.mp3",
-  };
+async function transcribeAudio(audioUrl: string) {
+  const config = { audio: audioUrl };
   const transcript = await client.transcripts.transcribe(config);
 
-  // Save transcript to a file
-  const transcriptPath = path.join(
-    process.cwd(),
-    "public",
-    "transcripts",
-    path.basename(audioPath, ".mp3") + ".txt"
-  );
-  if (!fs.existsSync(path.dirname(transcriptPath))) {
-    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
-  }
-
-  fs.writeFileSync(transcriptPath, transcript.text || "", "utf-8");
-
-  // upload to vercel
-  const { url } = await upload(path.basename(audioPath, ".mp3") + ".txt", transcriptPath, {
-    access: 'public',
-    handleUploadUrl: '/upload',
-  });
-  console.log(`Uploaded to ${url}`);
-
-  return { text: transcript.text, transcriptPath };
+  path.dirname(audioUrl);
+  return { text: transcript.text };
 }
 
-// ✅ **Extract Key Moments & Captions from Transcript**
 async function extractKeyMomentsFromTranscript(transcript: string) {
-  const prompt = `Identify key sentences and their timestamps from this transcript.
-  Return output in the format:  
-  start-end: caption text
-  
-  Example output:
-  10-30: "Success is about discipline."
-  40-70: "Hard work beats talent when talent is lazy."
-  100-130: "Dream big, start small."
+  const prompt = `Identify 3 key sentences and their timestamps from this transcript.
+Return output in the format:  
+start-end: caption text
 
-  Transcript:
-  ${transcript}`;
+Example output:
+10-30: "Success is about discipline."
+40-70: "Hard work beats talent when talent is lazy."
+100-130: "Dream big, start small."
+
+Transcript:
+${transcript}`;
 
   const model = gemini.getGenerativeModel({ model: "gemini-1.5-flash" });
   const response = await model.generateContent(prompt);
@@ -143,96 +116,89 @@ async function extractKeyMomentsFromTranscript(transcript: string) {
       captions.push(match[3]);
     }
   });
-  return {
-    keyMoments:
-      keyMoments.length > 0 ? keyMoments : ["0-30", "40-70", "90-120"],
-    captions:
-      captions.length > 0
-        ? captions
-        : [
-            "Runner's knee is a condition characterized by pain behind or around the kneecap",
-            "Symptoms include pain under or around the kneecap, pain when walking",
-            "The ligaments of the ankle holds the ankle bones and joint in position.",
-          ],
-  };
+  return { keyMoments, captions };
 }
 
+async function getVideoDimensions(videoPath: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(videoPath, (err, metadata) => {
+      if (err) return reject(err);
+      const videoStream = metadata.streams.find((s) => s.codec_type === "video");
+      if (!videoStream) return reject("No video stream found");
+      resolve({ width: videoStream.width || 0, height: videoStream.height || 0 });
+    });
+  });
+}
 
 async function generateSrtSubtitles(
-  timestamps: string[],
-  captions: string[],
+  timestamp: string,
+  caption: string,
   outputFile: string
 ) {
+  const [start, end] = timestamp.split("-").map(Number);
+  const duration = end - start;
+  const segmentLength = 4;
+  const numSegments = Math.ceil(duration / segmentLength);
+
+  const sentences = caption.split(/(?<=[.?!])\s+/).filter((s) => s.trim().length > 0);
+
   let srtContent = "";
   let counter = 1;
-
-  for (let i = 0; i < timestamps.length; i++) {
-    const [start, end] = timestamps[i].split("-").map(Number);
-    const duration = end - start;
-    const numCaptions = Math.min(captions.length, Math.floor(duration / 4)); // Adjust frequency
-
-    for (let j = 0; j < numCaptions; j++) {
-      const segmentStart = start + j * 4; // Every 4 seconds
-      const segmentEnd = Math.min(segmentStart + 4, end);
-
-      // Convert to SRT time format
-      const startFormatted = new Date(segmentStart * 1000)
-        .toISOString()
-        .substr(11, 12)
-        .replace(".", ",");
-
-      const endFormatted = new Date(segmentEnd * 1000)
-        .toISOString()
-        .substr(11, 12)
-        .replace(".", ",");
-
-      srtContent += `${counter}\n${startFormatted} --> ${endFormatted}\n${captions[j]}\n\n`;
-      counter++;
-    }
+  for (let i = 0; i < numSegments; i++) {
+    const segStart = i * segmentLength;
+    const segEnd = Math.min((i + 1) * segmentLength, duration);
+    const sentence = i < sentences.length ? sentences[i] : sentences[sentences.length - 1];
+    const startFormatted = new Date(segStart * 1000)
+      .toISOString()
+      .substr(11, 12)
+      .replace(".", ",");
+    const endFormatted = new Date(segEnd * 1000)
+      .toISOString()
+      .substr(11, 12)
+      .replace(".", ",");
+    srtContent += `${counter}\n${startFormatted} --> ${endFormatted}\n${sentence}\n\n`;
+    counter++;
   }
-
   fs.writeFileSync(outputFile, srtContent, "utf-8");
-  console.log(`✅ SRT subtitles created: ${outputFile}`);
 }
-
 
 async function generateShortClipsWithCaptions(
   videoPath: string,
   timestamps: string[],
   captions: string[]
 ) {
-  const outputDir = path.join(process.cwd(), "public", "short_videos");
-  const subtitlesDir = path.join(process.cwd(), "public", "subtitles");
+  const baseFolder = path.dirname(videoPath);
+  const shortVideosDir = path.join(process.cwd(), "public", baseFolder, "short_videos");
+  const captionsDir = path.join(process.cwd(), "public", baseFolder, "captions");
 
-  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-  if (!fs.existsSync(subtitlesDir)) fs.mkdirSync(subtitlesDir, { recursive: true });
+  if (!fs.existsSync(shortVideosDir)) fs.mkdirSync(shortVideosDir, { recursive: true });
+  if (!fs.existsSync(captionsDir)) fs.mkdirSync(captionsDir, { recursive: true });
+
+  const { height } = await getVideoDimensions(path.join(process.cwd(), "public", videoPath));
+  const fontSize = Math.round(height / 20);
+  const captionColor = "&H00FF00";
 
   const shortVideos: string[] = [];
 
   for (let i = 0; i < timestamps.length; i++) {
     const [start, end] = timestamps[i].split("-").map(Number);
     const duration = end - start;
-    const outputClip = path.join(outputDir, `clip_${i}.mp4`);
-    const srtFile = path.join(subtitlesDir, `subtitle_${i}.srt`);
+    const outputClip = path.join(shortVideosDir, `clip_${i}.mp4`);
+    const srtFile = path.join(captionsDir, `subtitle_${i}.srt`);
 
-    console.log(`srtFile`, srtFile);
+    await generateSrtSubtitles(timestamps[i], captions[i], srtFile);
 
-    // ✅ Generate SRT Subtitle
-    await generateSrtSubtitles([timestamps[i]], [captions[i]], srtFile);
-
-    // ✅ Generate Short Clip with Subtitles
     await new Promise<void>((resolve, reject) => {
-      ffmpeg(videoPath)
+      ffmpeg(path.join(process.cwd(), "public", videoPath))
         .setStartTime(start)
         .setDuration(duration)
         .outputOptions(
           "-vf",
-          `subtitles=${srtFile}:force_style='Fontsize=50,PrimaryColour=&HFFFFFF,Alignment=5,MarginV=50'`
-        ) // Ensures text is centered
+          `subtitles=${srtFile}:force_style='Fontsize=${fontSize},PrimaryColour=${captionColor},Alignment=5,MarginV=50'`
+        )
         .output(outputClip)
         .on("end", () => {
-          console.log(`✅ Short video created: ${outputClip}`);
-          shortVideos.push(`/short_videos/clip_${i}.mp4`);
+          shortVideos.push(path.join(baseFolder, "short_videos", `clip_${i}.mp4`));
           resolve();
         })
         .on("error", (err) => {
@@ -242,6 +208,5 @@ async function generateShortClipsWithCaptions(
         .run();
     });
   }
-
   return shortVideos;
 }
