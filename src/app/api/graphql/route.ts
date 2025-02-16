@@ -41,6 +41,12 @@ const resolvers = {
   Mutation: {
     addVideo: async (_: unknown, { title, filePath }: VideoArgs) => {
       await connectDB();
+      const existingVideo = await Video.findOne({ filePath });
+
+      if (existingVideo) {
+        return existingVideo;
+      }
+
       const video = new Video({ title, filePath });
       await video.save();
       return video;

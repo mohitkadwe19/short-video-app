@@ -2,8 +2,8 @@ import mongoose from "mongoose";
 
 const VideoSchema = new mongoose.Schema({
   title: String,
-  filePath: String,
-  shorts: [{ type: String }],
+  filePath: { type: String, required: true, unique: true },
+  shorts: { type: [String], default: [] },
   createdAt: { type: Date, default: Date.now },
 });
 

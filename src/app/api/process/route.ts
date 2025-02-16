@@ -6,7 +6,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { connectDB } from "../../../lib/mongodb";
 import { Video } from "../../../models/Video";
 import { AssemblyAI } from "assemblyai";
-import { upload } from '@vercel/blob/client';
+import { put } from '@vercel/blob';
 
 const gemini = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
@@ -30,9 +30,17 @@ export async function POST(req: Request) {
     // 1️⃣ Extract Audio from Video
     const audioPath = await extractAudio(absoluteVideoPath);
 
+    const fileName = path.basename(audioPath, ".mp3") + ".txt";
+    const fileBuffer = fs.readFileSync(audioPath);
+
+    const { url } = await put(`upload/${fileName}`, fileBuffer, {
+      access: "public",
+    });
+
+
     // 2️⃣ Transcribe Audio to Text using Gemini AI
     const { text: transcriptText , transcriptPath } = await transcribeAudio(
-      audioPath
+      url
     );
 
     await new Promise((resolve) => setTimeout(resolve, 1000)); // Small delay
@@ -88,7 +96,7 @@ async function extractAudio(videoPath: string) {
 // ✅ **Transcribe Audio using Gemini AI**
 async function transcribeAudio(audioPath: string) {
   const config = {
-    audio_url: "https://assembly.ai/sports_injuries.mp3",
+    audio_url: audioPath,
   };
   const transcript = await client.transcripts.transcribe(config);
 
@@ -97,20 +105,13 @@ async function transcribeAudio(audioPath: string) {
     process.cwd(),
     "public",
     "transcripts",
-    path.basename(audioPath, ".mp3") + ".txt"
+    path.basename(audioPath, ".mp3")
   );
   if (!fs.existsSync(path.dirname(transcriptPath))) {
     fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
   }
 
   fs.writeFileSync(transcriptPath, transcript.text || "", "utf-8");
-
-  // upload to vercel
-  const { url } = await upload(path.basename(audioPath, ".mp3") + ".txt", transcriptPath, {
-    access: 'public',
-    handleUploadUrl: '/upload',
-  });
-  console.log(`Uploaded to ${url}`);
 
   return { text: transcript.text, transcriptPath };
 }

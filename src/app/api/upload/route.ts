@@ -3,9 +3,6 @@ import fs from "fs";
 import path from "path";
 import { connectDB } from "../../../lib/mongodb";
 import { Video } from "../../../models/Video";
-// import multer from "multer";
-
-// const upload = multer({ dest: "public/uploads/" });
 
 export async function POST(req: Request) {
   try {
@@ -20,6 +17,10 @@ export async function POST(req: Request) {
 
     const filePath = `uploads/${file.name}`;
     const absolutePath = path.join(process.cwd(), "public", filePath);
+
+    if (fs.existsSync(absolutePath)) {
+      return NextResponse.json({ message: "File already exists", filePath });
+    }
 
     // Save file
     const buffer = Buffer.from(await file.arrayBuffer());
